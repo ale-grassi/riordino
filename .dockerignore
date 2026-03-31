@@ -1,0 +1,15 @@
+__pycache__/
+.env
+.venv/
+venv/
+output/
+*.pdf
+*.json
+.git/
+.gitignore
+.claude/
+.codex
+.vscode/
+.DS_Store
+Dockerfile
+.dockerignore

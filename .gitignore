@@ -1,0 +1,28 @@
+# Build
+dist/
+*.egg-info/
+
+# Cache
+__pycache__/
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Input & Output
+output/
+*.pdf
+*.json
+
+# IDE
+.vscode/
+
+# AI
+.claude/
+.codex
+
+# OS
+.DS_Store
+Thumbs.db

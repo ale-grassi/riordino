@@ -1,0 +1,68 @@
+You will be analyzing scanned document page images and extracting structured information from each one. The documents may be in {{LANGUAGES}}.
+
+You are analyzing {{COUNT}} page image(s). You MUST return exactly {{COUNT}} entries in your final output, one for each image provided, in the exact order they appear.
+
+For EACH page image provided, extract the following information:
+
+**title**: The document title visible on the page. If no clear title is present, invent a concise descriptive title that captures the document's purpose. The title should be in the same language as the document itself (not translated to English).
+
+**description**: A concise summary of the page content written in English (up to 300 words). Cover the key information, layout, and purpose. Even if the document is in another language, write this in English.
+
+**detailed_analysis**: An exhaustive, in-depth analysis of every detail present on the page, written in English. This should be 500–2000 words and must include:
+  - **Full text extraction**: Transcribe or closely paraphrase all visible text, including headers, footers, fine print, stamps, handwritten annotations, and watermarks.
+  - **Visual elements**: Describe logos, seals, signatures, tables, charts, photos, barcodes, QR codes, checkboxes, and their positions on the page.
+  - **Layout and structure**: Describe the page layout (columns, sections, margins, borders), formatting (fonts, bold, underline), and any visual hierarchy.
+  - **Numerical data**: List all amounts, dates, reference numbers, account numbers, phone numbers, addresses, and any other numerical or coded information visible.
+  - **Reasoning and context**: Explain what the document appears to be, why you classified it the way you did, what institution or process it relates to, and any inferences you can draw from the content (e.g., "This appears to be page 2 of a multi-page contract because..." or "The stamp suggests this was officially received on...").
+  - **Condition and quality**: Note any issues with the scan — skew, blurriness, cut-off text, stains, folds, or partially visible content, and what information might be missing as a result.
+  - **Language details**: Identify the language(s) used and note any multilingual elements.
+
+**page_number**: The printed page number if visible on the page (e.g., "1", "Page 2", "3/10"). If no page number is visible, use null.
+
+**date**: The main date of the document if visible (e.g., issue date, signature date, letter date). Use ISO 8601 format (YYYY-MM-DD). If only a month and year are visible, use "YYYY-MM". If only a year is visible, use "YYYY". If no date is visible, use null.
+
+**subject**: Any company name or logo text that is visible on the page. If multiple companies are mentioned, include the primary or most prominent one. If no company name or logo is visible, find a sender, otherwise use null.
+
+**document_type**: Classify the document into one of these categories: invoice, letter, report, form, contract, receipt, memo, certificate, statement, tax, insurance, medical, legal, other. Choose the single best-fitting category based on the document's layout, content, and purpose.
+
+**priority**: Assess the importance/urgency of this page's document. Choose one of:
+  - "urgent": Requires immediate attention (overdue payments, legal deadlines, expiring documents, formal notices, final warnings)
+  - "important": Significant documents to keep (contracts, certificates, medical records, tax documents, official government documents, identity papers)
+  - "normal": Standard documents (regular invoices, correspondence, training materials, informational letters)
+  - "spam": Junk, advertisements, promotional material, or documents with no real value
+
+Important guidelines:
+- Process the images in the exact order they are provided
+- Each image gets exactly one entry in your output
+- If text is in a language other than English, the title should remain in that original language, but the description must be in English
+- Keep the description concise (up to 300 words) — it is used for document grouping
+- Be exhaustive in the detailed_analysis (1000+ words) — capture every piece of information on the page
+- Use null (not the string "null", not an empty string, not "N/A") when information is not available
+- Make your best judgment on document_type based on visual cues, layout, content, and context
+- Pay attention to headers, footers, logos, formatting, and structural elements when determining document type
+- If a page is blank or unreadable, still provide an entry for it with appropriate null values and a description noting this
+- For dates, convert whatever format you see into ISO 8601 format (YYYY-MM-DD, YYYY-MM, or YYYY)
+- For priority assessment, consider the content and context carefully - legal notices, overdue bills, and expiring documents are urgent; contracts and official records are important; routine correspondence is normal; advertisements are spam
+
+Structure your response as a JSON object with a "pages" array containing exactly {{COUNT}} entries, one for each image in order. Each entry should be an object with these fields: title, description, detailed_analysis, page_number, date, subject, document_type, and priority.
+
+Your output must follow this exact JSON format:
+
+```json
+{
+  "pages": [
+    {
+      "title": "string or null",
+      "description": "string",
+      "detailed_analysis": "string",
+      "page_number": "string or null",
+      "date": "string (YYYY-MM-DD) or null",
+      "subject": "string or null",
+      "document_type": "string",
+      "priority": "urgent | important | normal | spam"
+    }
+  ]
+}
+```
+
+Your final output should contain ONLY the JSON object with exactly {{COUNT}} entries in the pages array. Do not include any text, explanation, or commentary before or after the JSON. The response must be valid JSON that can be parsed directly.

@@ -1,0 +1,96 @@
+You are tasked with analyzing metadata from pages of a scanned PDF that contains multiple separate documents mixed together. Your goal is to group these pages back into their original logical documents.
+
+Each page has already been individually analyzed by an AI vision model that examined the scanned image and extracted structured metadata. The fields below are summaries from that analysis (a longer detailed_analysis also exists per page but is omitted here for brevity):
+- **title**: The document title or a descriptive title for the page (in the document's original language)
+- **type**: The document category (invoice, letter, contract, certificate, etc.)
+- **priority**: The assessed priority of the page (urgent, important, normal, spam)
+- **subject**: The company, organization, or entity associated with the page
+- **date**: The document date in ISO format (YYYY-MM-DD, YYYY-MM, or YYYY) if available
+- **page_num**: The printed page number visible on the page (if any)
+- **description**: A concise English summary of the page content
+
+## Page Metadata
+
+Total pages: {max_index} (indices 0 to {max_index})
+
+{page_list}
+
+## Grouping Criteria
+
+Use the following clues to determine which pages belong to the same document:
+
+1. **Same subject/company**: Pages from the same organization or company likely belong together
+2. **Same document type**: Pages with the same type (e.g., all "contract" or all "invoice") may be part of one document
+3. **Same or adjacent dates**: Pages with identical or very close dates from the same subject
+4. **Sequential page numbering**: Consecutive page numbers (1, 2, 3, etc.) within the same subject strongly indicate one document
+5. **Content continuity**: Descriptions that reference continuation, follow-up content, or related topics
+6. **Visual/structural similarity**: Similar formatting, headers, or layout mentioned in descriptions
+7. **Logical coherence**: Pages that form a complete, coherent document when grouped together
+
+## Output Requirements
+
+For each document group you create, provide:
+
+- **title**: A clear, descriptive title for the document in English
+- **suggested_filename**: A filesystem-safe filename in English following this exact structure:
+  - Date prefix (if available): `YYYY-MM-DD_`, `YYYY-MM_`, or `YYYY_`
+  - Subject/company name (if known)
+  - Short descriptive title
+  - Use lowercase, underscores for spaces, no special characters, no file extension
+  - Examples: "2023-11-15_baloise_insurance_invoice", "2024-03_ccss_certificate", "randstad_safety_training"
+- **page_indices**: Array of page indices (0-based) belonging to this document
+- **summary**: Brief summary of the document's content
+- **priority**: The highest priority level from any page in the group (urgent > important > normal > spam)
+
+## Critical Rules
+
+- Every page index MUST appear in exactly one document group
+- Do NOT skip any page indices
+- Do NOT assign the same page index to multiple groups
+- Single-page documents are valid (e.g., standalone receipts or certificates)
+- When uncertain, keep pages separate rather than merging unrelated content
+- ALL titles and filenames MUST be in English
+- If pages in a group have different dates, use the earliest date in the filename
+- Use the most specific date format available (prefer YYYY-MM-DD over YYYY-MM over YYYY)
+
+## Process
+
+Before providing your final answer, use the scratchpad below to work through your grouping logic:
+
+<scratchpad>
+First, identify the total number of pages and their indices.
+
+Then, analyze the pages systematically:
+- Look for obvious document boundaries (different subjects, types, dates)
+- Identify sequences with matching page numbers
+- Group pages with strong connections (same subject + type + date)
+- Check for content continuity in descriptions
+- Verify that every page index is assigned to exactly one group
+
+List your proposed groupings and verify completeness.
+</scratchpad>
+
+After your analysis, provide your final answer as valid JSON only, with no additional text or explanation outside the JSON structure.
+
+The JSON format should be:
+
+```json
+{
+  "documents": [
+    {
+      "title": "Document Title in English",
+      "suggested_filename": "yyyy-mm-dd_subject_description",
+      "page_indices": [0, 1, 2],
+      "summary": "Brief summary of document content.",
+      "priority": "normal"
+    }
+  ]
+}
+```
+
+Your final output must:
+- Be valid JSON only
+- Include all page indices from the metadata exactly once
+- Have all titles and filenames in English
+- Follow the filename format specified above
+- Contain no text outside the JSON structure

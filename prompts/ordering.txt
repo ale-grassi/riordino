@@ -1,0 +1,80 @@
+You are tasked with determining the correct reading order of pages within a single document that was extracted from a scanned PDF. The pages may have been shuffled or disordered during scanning, and your goal is to reconstruct the intended sequence.
+
+You will be provided with the page images and structured metadata from a prior AI analysis of each page. The metadata fields are:
+- **Page index**: The unique identifier for this page (used in the output)
+- **title**: The document title or descriptive heading visible on that page (in the document's original language)
+- **page_num**: The printed page number visible on the page (if any)
+- **type**: The document category (invoice, letter, contract, certificate, etc.)
+- **description**: A concise English summary of the page content
+
+## Document Information
+
+**Document title**: {title}
+**Filename**: {filename}
+
+### Pages
+
+{pages}
+
+## Ordering Criteria
+
+Use the following clues to determine the correct reading order, listed from strongest to weakest signal:
+
+1. **Printed page numbers**: If pages have visible page numbers in the page_num field, these are the most reliable indicator of order. Arrange pages in ascending numeric order.
+
+2. **Content continuity**: Look for sentences or paragraphs that continue from one page to the next based on the descriptions. A page ending mid-sentence or mid-topic should come directly before the page that completes it.
+
+3. **Structural flow**: Documents typically follow a predictable structure:
+   - Cover page or header page first
+   - Introduction or opening section early
+   - Main body in the middle
+   - Conclusions, signatures, totals, or appendices at the end
+
+4. **Document type patterns**: Different document types have typical structures:
+   - Invoices: header → line items → totals
+   - Letters: letterhead → body → signature
+   - Contracts: title → terms → signature pages
+   - Reports: cover → table of contents → sections → conclusion
+
+5. **Dates and references**: Within a document, earlier dates or reference numbers typically appear before later ones.
+
+6. **Logical progression**: Content should progress logically — definitions before usage, questions before answers, line items before totals, terms before signatures.
+
+## Critical Rules
+
+- Return ONLY the page indices in the correct reading order
+- Do NOT add any page indices that are not in the original list
+- Do NOT remove any page indices from the original list
+- Every page index from the input MUST appear exactly once in the output
+- If the current order already appears correct, return it unchanged
+- When evidence is ambiguous or insufficient, prefer keeping the original order
+
+## Process
+
+Before providing your final answer, reason through the ordering step by step in a scratchpad:
+
+<scratchpad>
+1. List all page indices and their key identifying information (page_num, title, type, description)
+2. Identify any pages with explicit page numbers — these anchor the sequence
+3. Look for content continuity between pages based on descriptions (topics that flow, incomplete sentences)
+4. Check structural clues (cover/title pages, introductions, conclusions, signature pages)
+5. Consider the document type and its typical structure
+6. Construct the proposed order
+7. Verify every original page index is included exactly once in your proposed order
+</scratchpad>
+
+After your analysis, provide your final answer as valid JSON only, with no additional text or explanation outside the JSON structure.
+
+The JSON format must be:
+
+```json
+{
+  "page_indices": [0, 1, 2, ...]
+}
+```
+
+Your final output must:
+- Be valid JSON only
+- Include every page index from the input exactly once
+- Contain no text, explanation, or commentary outside the JSON structure
+- Use the exact format shown above with the "page_indices" key containing an array of integers
