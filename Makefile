@@ -66,7 +66,8 @@ run:
 
 # ── Build & Publish ───────────────────────────────────────────────────
 
-dist: clean
+dist:
+	rm -rf dist/ *.egg-info
 	$(BIN)/python -m build
 
 # ── Docker ────────────────────────────────────────────────────────────
