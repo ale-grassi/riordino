@@ -1,5 +1,11 @@
 # riordino
 
+[![CI](https://github.com/ale-grassi/riordino/actions/workflows/ci.yml/badge.svg)](https://github.com/ale-grassi/riordino/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/riordino)](https://pypi.org/project/riordino/)
+[![Python](https://img.shields.io/pypi/pyversions/riordino)](https://pypi.org/project/riordino/)
+[![License](https://img.shields.io/github/license/ale-grassi/riordino)](https://github.com/ale-grassi/riordino/blob/main/LICENSE)
+[![GHCR](https://img.shields.io/badge/ghcr.io-riordino-blue?logo=docker)](https://ghcr.io/ale-grassi/riordino)
+
 **Intelligent scanned PDF organizer** — Splits a bulk-scanned PDF into separate, well-named documents using AI.
 
 `riordino` takes one or more PDFs (the kind you get from scanning an entire stack of mixed paperwork at once) and treats them as a single bulk to analyze.
