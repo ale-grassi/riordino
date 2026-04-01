@@ -45,7 +45,7 @@
 - **Smart document grouping** — pages are aggregated into logical documents based on content, subject, dates, and page numbering
 - **Intelligent page ordering** — reconstructs the correct reading order within each document
 - **Descriptive filenames** — output files are named with dates, subjects, and descriptions (e.g., `2024-03_ccss_certificate.pdf`)
-- **JSON sidecar metadata** — each output PDF has a companion JSON file with full extracted metadata
+- **Selective API retries** — transient Gemini failures are retried with exponential backoff; invalid structured responses fail fast
 - **Configurable language support** — `--language` flag constrains Tesseract and Gemini to specific languages (23 languages supported)
 - **Selective pipeline control** — skip individual steps with `--skip-blanks`, `--skip-rotation`, `--skip-analysis`, `--skip-aggregation`, `--skip-ordering`
 - **Dependency checks** — verifies Tesseract, language packs, and API keys before running
@@ -159,7 +159,6 @@ This processes the input PDF(s) and writes the split documents to the same direc
 
 ## Next Steps
 
-- [x] Publish to PyPI for `pip install riordino`
 - [ ] Add a `--verbose` / `--quiet` flag for log level control
 - [ ] Explore local/open-source LLM backends as an alternative to Gemini
 - [ ] Support OCR-based text extraction as a fallback when Gemini is unavailable
