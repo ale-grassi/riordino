@@ -69,10 +69,6 @@ LANGUAGE_MAP: dict[str, tuple[str, str]] = {
     "ar": ("ara", "Arabic"),
 }
 
-ANALYSIS_PROMPT = (SCRIPT_DIR / "prompts" / "analysis.txt").read_text(encoding="utf-8")
-AGGREGATION_PROMPT = (SCRIPT_DIR / "prompts" / "aggregation.txt").read_text(encoding="utf-8")
-ORDERING_PROMPT = (SCRIPT_DIR / "prompts" / "ordering.txt").read_text(encoding="utf-8")
-
 
 class RiordinoError(Exception):
     """Base application error."""
@@ -88,6 +84,10 @@ class DependencyError(RiordinoError):
 
 class ModelResponseError(RiordinoError):
     """LLM returned invalid or inconsistent structured data."""
+
+
+class PromptError(RiordinoError):
+    """Prompt files are missing or unreadable."""
 
 
 class Priority(StrEnum):
@@ -225,6 +225,13 @@ class OrderedDocumentsState:
     aggregation: AggregationResult
 
 
+@dataclass(frozen=True)
+class PromptSet:
+    analysis: str
+    aggregation: str
+    ordering: str
+
+
 @dataclass
 class PipelineContext:
     options: PipelineOptions
@@ -289,6 +296,17 @@ def make_progress() -> Progress:
         CompactTimeColumn(),
         console=console,
     )
+
+
+def load_prompts(base_dir: Path = SCRIPT_DIR / "prompts") -> PromptSet:
+    try:
+        return PromptSet(
+            analysis=(base_dir / "analysis.txt").read_text(encoding="utf-8"),
+            aggregation=(base_dir / "aggregation.txt").read_text(encoding="utf-8"),
+            ordering=(base_dir / "ordering.txt").read_text(encoding="utf-8"),
+        )
+    except OSError as exc:
+        raise PromptError(f"could not load prompts from {base_dir}: {exc}") from exc
 
 
 def parse_languages(raw: str) -> list[str]:
@@ -521,10 +539,11 @@ def retry_api_call[T](fn: Callable[[], T], max_retries: int) -> T:
 
 
 class GeminiService:
-    def __init__(self, client: genai.Client, model: str, max_retries: int):
+    def __init__(self, client: genai.Client, model: str, max_retries: int, prompts: PromptSet):
         self.client = client
         self.model = model
         self.max_retries = max_retries
+        self.prompts = prompts
 
     def _parse_response[T: BaseModel](self, response: types.GenerateContentResponse, schema: type[T]) -> T:
         if not response.text:
@@ -571,7 +590,7 @@ class GeminiService:
         for position, page in enumerate(batch, start=1):
             parts.append(types.Part.from_text(text=f"--- Page {position} (index {page.original_index}) ---"))
             parts.append(make_image_part(page.image))
-        prompt = ANALYSIS_PROMPT.replace("{{COUNT}}", str(len(batch))).replace(
+        prompt = self.prompts.analysis.replace("{{COUNT}}", str(len(batch))).replace(
             "{{LANGUAGES}}", ", ".join(language_names)
         )
         parts.append(types.Part.from_text(text=prompt))
@@ -591,7 +610,7 @@ class GeminiService:
                 f"page_num={analysis.page_number}, "
                 f'description="{description}"'
             )
-        prompt = AGGREGATION_PROMPT.replace("{max_index}", str(len(analyses) - 1)).replace(
+        prompt = self.prompts.aggregation.replace("{max_index}", str(len(analyses) - 1)).replace(
             "{page_list}", "\n".join(page_lines)
         )
         return self._generate_text(prompt, AggregationResult)
@@ -615,7 +634,7 @@ class GeminiService:
                 parts.append(types.Part.from_text(text=f"--- Page index {page_index} ---"))
                 parts.append(make_image_part(page_images[page_index]))
         prompt = (
-            ORDERING_PROMPT.replace("{title}", group.title)
+            self.prompts.ordering.replace("{title}", group.title)
             .replace("{filename}", group.suggested_filename)
             .replace("{pages}", "\n".join(page_lines))
         )
@@ -923,8 +942,9 @@ def run_pipeline(options: PipelineOptions) -> None:
         rotation = correct_rotations(context, cleanup.pages)
         service = None
         if not options.skip_analysis:
+            prompts = load_prompts()
             service = GeminiService(
-                genai.Client(api_key=os.environ["GOOGLE_API_KEY"]), options.model, options.max_retries
+                genai.Client(api_key=os.environ["GOOGLE_API_KEY"]), options.model, options.max_retries, prompts
             )
         analyzed_state = analyze_stage(service, context, rotation.pages)
         grouped_state = aggregate_stage(service, context, analyzed_state)

@@ -267,6 +267,23 @@ def test_parse_languages_rejects_unknown_codes(riordino):
         riordino.parse_languages("en,xx")
 
 
+def test_load_prompts_reads_prompt_files(riordino, tmp_path):
+    (tmp_path / "analysis.txt").write_text("analysis", encoding="utf-8")
+    (tmp_path / "aggregation.txt").write_text("aggregation", encoding="utf-8")
+    (tmp_path / "ordering.txt").write_text("ordering", encoding="utf-8")
+
+    prompts = riordino.load_prompts(tmp_path)
+
+    assert prompts.analysis == "analysis"
+    assert prompts.aggregation == "aggregation"
+    assert prompts.ordering == "ordering"
+
+
+def test_load_prompts_raises_prompt_error_for_missing_files(riordino, tmp_path):
+    with pytest.raises(riordino.PromptError):
+        riordino.load_prompts(tmp_path)
+
+
 def test_pipeline_options_from_cli_applies_implied_skips(riordino, tmp_path):
     options = riordino.PipelineOptions.from_cli(
         input_paths=[tmp_path / "scan.pdf"],
@@ -376,3 +393,80 @@ def test_save_json_writes_expected_payload(riordino, tmp_path):
     path = tmp_path / "payload.json"
     riordino.save_json({"priority": riordino.Priority.NORMAL.value}, path)
     assert json.loads(path.read_text(encoding="utf-8")) == {"priority": "normal"}
+
+
+def test_run_pipeline_skip_analysis_does_not_load_prompts(riordino, tmp_path, monkeypatch):
+    options = riordino.PipelineOptions(
+        input_paths=[tmp_path / "scan.pdf"],
+        output_dir=tmp_path,
+        blank_threshold=0.001,
+        dpi=150,
+        model="model",
+        batch_size=10,
+        max_retries=3,
+        dry_run=True,
+        languages=["en"],
+        skip_analysis=True,
+        skip_aggregation=True,
+        skip_ordering=True,
+    )
+
+    class FakeDoc:
+        page_count = 1
+
+        def close(self):
+            return None
+
+    pages = [riordino.RenderedPage(0, object())]
+    aggregation = riordino.AggregationResult(
+        documents=[
+            riordino.DocumentGroup(
+                title="Title",
+                suggested_filename="Title",
+                page_indices=[0],
+                summary="Summary",
+                priority=riordino.Priority.NORMAL,
+            )
+        ]
+    )
+
+    monkeypatch.setattr(
+        riordino, "load_prompts", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("called"))
+    )
+    monkeypatch.setattr(
+        riordino,
+        "build_context",
+        lambda options: riordino.PipelineContext(options=options, source_doc=FakeDoc(), steps_dir=None),
+    )
+    monkeypatch.setattr(
+        riordino,
+        "remove_blank_pages",
+        lambda context: riordino.CleanupResult(pages=pages, blank_indices=[], blank_metrics=[]),
+    )
+    monkeypatch.setattr(
+        riordino,
+        "correct_rotations",
+        lambda context, input_pages: riordino.RotationResult(pages=input_pages, rotations={}),
+    )
+    monkeypatch.setattr(
+        riordino,
+        "aggregate_stage",
+        lambda service, context, state: riordino.GroupedDocumentsState(
+            pages=state.pages,
+            analyses=[],
+            aggregation=aggregation,
+        ),
+    )
+    monkeypatch.setattr(
+        riordino,
+        "order_stage",
+        lambda service, context, state: riordino.OrderedDocumentsState(
+            pages=state.pages,
+            analyses=state.analyses,
+            aggregation=state.aggregation,
+        ),
+    )
+    monkeypatch.setattr(riordino, "write_outputs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(riordino, "print_summary", lambda *args, **kwargs: None)
+
+    riordino.run_pipeline(options)
