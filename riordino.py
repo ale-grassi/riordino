@@ -104,6 +104,10 @@ PRIORITY_STYLES: dict[Priority, str] = {
     Priority.SPAM: "dim",
 }
 
+PAGE_THINKING_BUDGET = 8000
+GROUPING_THINKING_BUDGET = 16000
+ORDERING_THINKING_BUDGET = 8000
+
 
 class PipelineOptions(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -561,7 +565,7 @@ class GeminiService:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=schema,
-                    thinking_config=types.ThinkingConfig(thinking_budget=8000),
+                    thinking_config=types.ThinkingConfig(thinking_budget=GROUPING_THINKING_BUDGET),
                 ),
             )
             return self._parse_response(response, schema)
@@ -578,7 +582,7 @@ class GeminiService:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=schema,
-                    thinking_config=types.ThinkingConfig(thinking_budget=8000),
+                    thinking_config=types.ThinkingConfig(thinking_budget=PAGE_THINKING_BUDGET),
                 ),
             )
             return self._parse_response(response, schema)
@@ -639,10 +643,27 @@ class GeminiService:
             .replace("{pages}", "\n".join(page_lines))
         )
         parts.append(types.Part.from_text(text=prompt))
-        result = self._generate_multimodal(parts, OrderingResult)
+        result = self._generate_ordering(parts, OrderingResult)
         if sorted(result.page_indices) != sorted(group.page_indices):
             raise ModelResponseError("ordering changed the set of page indices")
         return result.page_indices
+
+    def _generate_ordering[T: BaseModel](self, parts: list[types.Part], schema: type[T]) -> T:
+        contents = types.Content(role="user", parts=parts)
+
+        def call() -> T:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                    thinking_config=types.ThinkingConfig(thinking_budget=ORDERING_THINKING_BUDGET),
+                ),
+            )
+            return self._parse_response(response, schema)
+
+        return retry_api_call(call, self.max_retries)
 
 
 def build_context(options: PipelineOptions) -> PipelineContext:
