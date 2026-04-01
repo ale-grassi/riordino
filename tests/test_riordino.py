@@ -60,6 +60,7 @@ def load_riordino_module():
 
     google = types.ModuleType("google")
     genai = types.ModuleType("google.genai")
+    genai_errors = types.ModuleType("google.genai.errors")
     google_types = types.ModuleType("google.genai.types")
 
     class FakePart:
@@ -92,13 +93,30 @@ def load_riordino_module():
         def __init__(self, *args, **kwargs):
             self.models = types.SimpleNamespace(generate_content=lambda **kw: None)
 
+    class FakeAPIError(Exception):
+        def __init__(self, code, response_json=None, response=None):
+            super().__init__(code)
+            self.code = code
+            self.response_json = response_json
+            self.response = response
+
+    class FakeClientError(FakeAPIError):
+        pass
+
+    class FakeServerError(FakeAPIError):
+        pass
+
     google_types.Part = FakePart
     google_types.Content = FakeContent
     google_types.GenerateContentConfig = FakeGenerateContentConfig
     google_types.GenerateContentResponse = FakeGenerateContentResponse
     google_types.ThinkingConfig = FakeThinkingConfig
+    genai_errors.APIError = FakeAPIError
+    genai_errors.ClientError = FakeClientError
+    genai_errors.ServerError = FakeServerError
     genai.Client = FakeClient
     genai.types = google_types
+    genai.errors = genai_errors
     google.genai = genai
 
     rich_console = types.ModuleType("rich.console")
@@ -216,6 +234,7 @@ def load_riordino_module():
             "dotenv": dotenv,
             "google": google,
             "google.genai": genai,
+            "google.genai.errors": genai_errors,
             "google.genai.types": google_types,
             "PIL": pil,
             "PIL.Image": image_module,
@@ -280,10 +299,8 @@ def test_resolve_filename_adds_numeric_suffix(riordino, tmp_path):
 
 
 def test_is_transient_api_error_distinguishes_validation_from_retriable(riordino):
-    class RateLimitedError(Exception):
-        status_code = 429
-
-    assert riordino.is_transient_api_error(RateLimitedError()) is True
+    assert riordino.is_transient_api_error(riordino.genai_errors.ClientError(429, {})) is True
+    assert riordino.is_transient_api_error(riordino.genai_errors.ServerError(503, {})) is True
     assert riordino.is_transient_api_error(riordino.ModelResponseError("bad schema")) is False
     assert riordino.is_transient_api_error(ValueError("bad value")) is False
 
@@ -315,14 +332,14 @@ def test_write_outputs_does_not_write_sidecar_without_steps(riordino, tmp_path, 
         suggested_filename="Title",
         page_indices=[0],
         summary="Summary",
-        priority="normal",
+        priority=riordino.Priority.NORMAL,
     )
     analysis = riordino.PageAnalysis(
         title="Page title",
         description="Page description",
         detailed_analysis="Detailed",
         document_type="letter",
-        priority="normal",
+        priority=riordino.Priority.NORMAL,
     )
 
     written = riordino.write_outputs(context, [group], [7], [analysis])
@@ -340,16 +357,22 @@ def test_write_json_sidecar_targets_steps_directory(riordino, tmp_path):
         suggested_filename="Title",
         page_indices=[0],
         summary="Summary",
-        priority="normal",
+        priority=riordino.Priority.NORMAL,
     )
     analysis = riordino.PageAnalysis(
         title="Page title",
         description="Page description",
         detailed_analysis="Detailed",
         document_type="letter",
-        priority="normal",
+        priority=riordino.Priority.NORMAL,
     )
 
     riordino.write_json_sidecar(steps_dir / "Title.json", group, [analysis])
 
     assert (steps_dir / "Title.json").exists()
+
+
+def test_save_json_writes_expected_payload(riordino, tmp_path):
+    path = tmp_path / "payload.json"
+    riordino.save_json({"priority": riordino.Priority.NORMAL.value}, path)
+    assert json.loads(path.read_text(encoding="utf-8")) == {"priority": "normal"}

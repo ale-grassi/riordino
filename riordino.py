@@ -8,8 +8,10 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from enum import StrEnum
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,7 @@ import click
 import pymupdf
 from dotenv import load_dotenv
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 from PIL import Image, ImageStat
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -39,13 +42,6 @@ load_dotenv()
 
 console = Console()
 SCRIPT_DIR = Path(__file__).resolve().parent
-
-PRIORITY_STYLES = {
-    "urgent": "bold red",
-    "important": "yellow",
-    "normal": "green",
-    "spam": "dim",
-}
 
 LANGUAGE_MAP: dict[str, tuple[str, str]] = {
     "en": ("eng", "English"),
@@ -92,6 +88,21 @@ class DependencyError(RiordinoError):
 
 class ModelResponseError(RiordinoError):
     """LLM returned invalid or inconsistent structured data."""
+
+
+class Priority(StrEnum):
+    URGENT = "urgent"
+    IMPORTANT = "important"
+    NORMAL = "normal"
+    SPAM = "spam"
+
+
+PRIORITY_STYLES: dict[Priority, str] = {
+    Priority.URGENT: "bold red",
+    Priority.IMPORTANT: "yellow",
+    Priority.NORMAL: "green",
+    Priority.SPAM: "dim",
+}
 
 
 class PipelineOptions(BaseModel):
@@ -189,12 +200,36 @@ class RotationResult:
     rotations: dict[int, int]
 
 
+@dataclass(frozen=True)
+class PreparedPagesState:
+    pages: list[RenderedPage]
+
+
+@dataclass(frozen=True)
+class AnalyzedPagesState:
+    pages: list[RenderedPage]
+    analyses: list[PageAnalysis]
+
+
+@dataclass(frozen=True)
+class GroupedDocumentsState:
+    pages: list[RenderedPage]
+    analyses: list[PageAnalysis]
+    aggregation: AggregationResult
+
+
+@dataclass(frozen=True)
+class OrderedDocumentsState:
+    pages: list[RenderedPage]
+    analyses: list[PageAnalysis]
+    aggregation: AggregationResult
+
+
 @dataclass
 class PipelineContext:
     options: PipelineOptions
     source_doc: pymupdf.Document
     steps_dir: Path | None
-    analyses: list[PageAnalysis] = field(default_factory=list)
 
 
 class PageAnalysis(BaseModel):
@@ -205,7 +240,7 @@ class PageAnalysis(BaseModel):
     date: str | None = None
     subject: str | None = None
     document_type: str
-    priority: str
+    priority: Priority
 
 
 class BatchAnalysisResult(BaseModel):
@@ -217,7 +252,7 @@ class DocumentGroup(BaseModel):
     suggested_filename: str
     page_indices: list[int]
     summary: str
-    priority: str
+    priority: Priority
 
 
 class AggregationResult(BaseModel):
@@ -388,17 +423,37 @@ def make_image_part(image: Image.Image) -> types.Part:
 
 
 def save_json(data: Any, path: Path) -> None:
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as tmp:
+        tmp.write(json.dumps(data, indent=2, ensure_ascii=False))
+        tmp_path = Path(tmp.name)
+    tmp_path.replace(path)
 
 
 def save_pdf_subset(source_doc: pymupdf.Document, page_indices: list[int], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     new_doc = pymupdf.open()
     try:
         for idx in page_indices:
             new_doc.insert_pdf(source_doc, from_page=idx, to_page=idx)
-        new_doc.save(str(path))
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+        new_doc.save(str(tmp_path))
     finally:
         new_doc.close()
+    tmp_path.replace(path)
 
 
 def write_json_sidecar(json_path: Path, group: DocumentGroup, page_analyses: list[PageAnalysis]) -> None:
@@ -407,7 +462,7 @@ def write_json_sidecar(json_path: Path, group: DocumentGroup, page_analyses: lis
             "title": group.title,
             "suggested_filename": group.suggested_filename,
             "summary": group.summary,
-            "priority": group.priority,
+            "priority": group.priority.value,
             "pages": [analysis.model_dump() for analysis in page_analyses],
         },
         json_path,
@@ -435,13 +490,13 @@ def resolve_filename(output_dir: Path, base_name: str, ext: str = ".pdf") -> Pat
 def is_transient_api_error(exc: BaseException) -> bool:
     if isinstance(exc, (KeyboardInterrupt, ValidationError, ModelResponseError, ValueError, AssertionError)):
         return False
-    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+    if isinstance(exc, genai_errors.ServerError):
         return True
-    status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-    if isinstance(status_code, int):
-        return status_code in {408, 409, 429, 500, 502, 503, 504}
-    name = exc.__class__.__name__.lower()
-    return any(token in name for token in ("timeout", "tempor", "server", "rate", "unavailable"))
+    if isinstance(exc, genai_errors.ClientError):
+        return exc.code in {408, 409, 429}
+    if isinstance(exc, genai_errors.APIError):
+        return exc.code in {408, 409, 429, 500, 502, 503, 504}
+    return isinstance(exc, (TimeoutError, ConnectionError, OSError))
 
 
 def retry_api_call[T](fn: Callable[[], T], max_retries: int) -> T:
@@ -531,7 +586,7 @@ class GeminiService:
             description = analysis.description.replace("\n", " ")
             page_lines.append(
                 f'Page {index}: title="{analysis.title}", type={analysis.document_type}, '
-                f"priority={analysis.priority}, "
+                f"priority={analysis.priority.value}, "
                 f"subject={analysis.subject or 'unknown'}, date={analysis.date or 'unknown'}, "
                 f"page_num={analysis.page_number}, "
                 f'description="{description}"'
@@ -714,6 +769,15 @@ def analyze_pages(service: GeminiService, context: PipelineContext, pages: list[
     return analyses
 
 
+def analyze_stage(
+    service: GeminiService | None, context: PipelineContext, pages: list[RenderedPage]
+) -> PreparedPagesState | AnalyzedPagesState:
+    if service is None:
+        console.print("\n  [dim]Page analysis: skipped[/]")
+        return PreparedPagesState(pages=pages)
+    return AnalyzedPagesState(pages=pages, analyses=analyze_pages(service, context, pages))
+
+
 def aggregate_pages(
     service: GeminiService | None, context: PipelineContext, analyses: list[PageAnalysis], page_count: int
 ) -> AggregationResult:
@@ -731,7 +795,7 @@ def aggregate_pages(
                     suggested_filename=fallback_name,
                     page_indices=list(range(page_count)),
                     summary="All pages (aggregation skipped)",
-                    priority="normal",
+                    priority=Priority.NORMAL,
                 )
             ]
         )
@@ -744,6 +808,18 @@ def aggregate_pages(
     if context.steps_dir:
         save_json(aggregation.model_dump(), context.steps_dir / "06_aggregation.json")
     return aggregation
+
+
+def aggregate_stage(
+    service: GeminiService | None, context: PipelineContext, state: PreparedPagesState | AnalyzedPagesState
+) -> GroupedDocumentsState:
+    match state:
+        case AnalyzedPagesState(pages=pages, analyses=analyses):
+            aggregation = aggregate_pages(service, context, analyses, len(pages))
+            return GroupedDocumentsState(pages=pages, analyses=analyses, aggregation=aggregation)
+        case PreparedPagesState(pages=pages):
+            aggregation = aggregate_pages(service, context, [], len(pages))
+            return GroupedDocumentsState(pages=pages, analyses=[], aggregation=aggregation)
 
 
 def order_groups(
@@ -782,6 +858,13 @@ def order_groups(
     return ordered
 
 
+def order_stage(
+    service: GeminiService | None, context: PipelineContext, state: GroupedDocumentsState
+) -> OrderedDocumentsState:
+    aggregation = order_groups(service, context, state.aggregation, state.analyses, state.pages)
+    return OrderedDocumentsState(pages=state.pages, analyses=state.analyses, aggregation=aggregation)
+
+
 def write_outputs(
     context: PipelineContext,
     groups: list[DocumentGroup],
@@ -818,7 +901,7 @@ def print_summary(groups: list[DocumentGroup], written_count: int, dry_run: bool
     table.add_column("Pages", justify="right")
     for group in groups:
         style = PRIORITY_STYLES.get(group.priority, "")
-        table.add_row(f"[{style}]{group.priority}[/]", group.suggested_filename, str(len(group.page_indices)))
+        table.add_row(f"[{style}]{group.priority.value}[/]", group.suggested_filename, str(len(group.page_indices)))
     console.print()
     console.print(table)
     verb = "planned" if dry_run else "written"
@@ -843,19 +926,19 @@ def run_pipeline(options: PipelineOptions) -> None:
             service = GeminiService(
                 genai.Client(api_key=os.environ["GOOGLE_API_KEY"]), options.model, options.max_retries
             )
-        context.analyses = analyze_pages(service, context, rotation.pages) if service else []
-        aggregation = aggregate_pages(service, context, context.analyses, len(rotation.pages))
-        ordered = order_groups(service, context, aggregation, context.analyses, rotation.pages)
-        page_index_map = [page.original_index for page in rotation.pages]
+        analyzed_state = analyze_stage(service, context, rotation.pages)
+        grouped_state = aggregate_stage(service, context, analyzed_state)
+        ordered_state = order_stage(service, context, grouped_state)
+        page_index_map = [page.original_index for page in ordered_state.pages]
         if options.dry_run:
             console.print(f"\n[bold yellow]\\[DRY RUN][/] Would write to: {options.output_dir}")
         else:
             console.print(f"\n[bold]Writing[/] output to: {options.output_dir}")
-        written = write_outputs(context, ordered.documents, page_index_map, context.analyses)
+        written = write_outputs(context, ordered_state.aggregation.documents, page_index_map, ordered_state.analyses)
         if context.steps_dir and not options.dry_run:
             for item in written:
                 write_json_sidecar(context.steps_dir / f"{item.path.stem}.json", item.group, item.page_analyses)
-        print_summary(ordered.documents, len(written), options.dry_run)
+        print_summary(ordered_state.aggregation.documents, len(written), options.dry_run)
     finally:
         context.source_doc.close()
 
