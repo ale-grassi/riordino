@@ -19,6 +19,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
+    "click>=8.1",
     "pymupdf>=1.25",
     "pytesseract>=0.3.10",
     "google-genai>=1.0",

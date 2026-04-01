@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """riordino — Scanned PDF organizer."""
 
-import argparse
 import concurrent.futures
 import json
 import os
@@ -15,6 +14,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import click
 import pymupdf
 from dotenv import load_dotenv
 from google import genai
@@ -213,32 +213,6 @@ def make_progress() -> Progress:
     )
 
 
-def bounded_int(name: str, lower: int, upper: int) -> Callable[[str], int]:
-    def _parse(raw: str) -> int:
-        try:
-            value = int(raw)
-        except ValueError as exc:
-            raise argparse.ArgumentTypeError(f"{name} must be an integer.") from exc
-        if not lower <= value <= upper:
-            raise argparse.ArgumentTypeError(f"{name} must be between {lower} and {upper}.")
-        return value
-
-    return _parse
-
-
-def bounded_float(name: str, lower: float, upper: float) -> Callable[[str], float]:
-    def _parse(raw: str) -> float:
-        try:
-            value = float(raw)
-        except ValueError as exc:
-            raise argparse.ArgumentTypeError(f"{name} must be a number.") from exc
-        if not lower <= value <= upper:
-            raise argparse.ArgumentTypeError(f"{name} must be between {lower} and {upper}.")
-        return value
-
-    return _parse
-
-
 def parse_languages(raw: str) -> list[str]:
     codes = [code.strip().lower() for code in raw.split(",") if code.strip()]
     if not codes:
@@ -258,78 +232,41 @@ def langs_to_names(codes: list[str]) -> list[str]:
     return [LANGUAGE_MAP[code][1] for code in codes]
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="riordino",
-        description="Organize scanned PDFs: remove blanks, fix rotation, split by document. Multiple inputs are merged into a single bulk.",
-    )
-    parser.add_argument(
-        "input_pdf", type=Path, nargs="+", help="Path(s) to scanned PDF(s) — multiple files are merged into one bulk"
-    )
-    parser.add_argument(
-        "-o", "--output-dir", type=Path, default=None, help="Output directory (default: same as input file)"
-    )
-    parser.add_argument(
-        "-b",
-        "--blank-threshold",
-        type=bounded_float("--blank-threshold", 0.0, 1.0),
-        default=0.001,
-        help="Pixel variance threshold for blank detection (default: 0.001)",
-    )
-    parser.add_argument("-n", "--dry-run", action="store_true", help="Show plan without writing files")
-    parser.add_argument("--dpi", type=bounded_int("--dpi", 72, 600), default=150, help="Render DPI (default: 150)")
-    parser.add_argument("--model", type=str, default="gemini-3.1-flash-lite-preview", help="Gemini model name")
-    parser.add_argument(
-        "-l",
-        "--language",
-        type=str,
-        default=os.environ.get("RIORDINO_LANGUAGES", "en"),
-        help="Comma-separated language codes, e.g. 'en,de,fr' (default: $RIORDINO_LANGUAGES or 'en')",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=bounded_int("--batch-size", 1, 50),
-        default=10,
-        help="Pages per LLM batch (default: 10)",
-    )
-    parser.add_argument(
-        "--max-retries",
-        type=bounded_int("--max-retries", 0, 10),
-        default=3,
-        help="Max API retry attempts (default: 3)",
-    )
-    parser.add_argument("--save-steps", action="store_true", help="Save intermediate outputs to _steps/ directory")
-    parser.add_argument("--skip-blanks", action="store_true", help="Skip blank page detection (keep all pages)")
-    parser.add_argument("--skip-rotation", action="store_true", help="Skip rotation detection and correction")
-    parser.add_argument(
-        "--skip-analysis", action="store_true", help="Skip LLM page analysis (implies --skip-aggregation)"
-    )
-    parser.add_argument(
-        "--skip-aggregation", action="store_true", help="Skip LLM document grouping (implies --skip-ordering)"
-    )
-    parser.add_argument("--skip-ordering", action="store_true", help="Skip LLM page ordering within documents")
-    return parser.parse_args()
-
-
-def normalize_options(args: argparse.Namespace) -> PipelineOptions:
-    skip_analysis = args.skip_analysis
-    skip_aggregation = args.skip_aggregation or skip_analysis
-    skip_ordering = args.skip_ordering or skip_aggregation
-    languages = parse_languages(args.language)
-    output_dir = args.output_dir or args.input_pdf[0].parent
+def normalize_options(
+    *,
+    input_paths: list[Path],
+    output_dir: Path | None,
+    blank_threshold: float,
+    dpi: int,
+    model: str,
+    batch_size: int,
+    max_retries: int,
+    dry_run: bool,
+    language: str,
+    save_steps: bool,
+    skip_blanks: bool,
+    skip_rotation: bool,
+    skip_analysis: bool,
+    skip_aggregation: bool,
+    skip_ordering: bool,
+) -> PipelineOptions:
+    skip_aggregation = skip_aggregation or skip_analysis
+    skip_ordering = skip_ordering or skip_aggregation
+    languages = parse_languages(language)
+    resolved_output_dir = output_dir or input_paths[0].parent
     return PipelineOptions(
-        input_paths=args.input_pdf,
-        output_dir=output_dir,
-        blank_threshold=args.blank_threshold,
-        dpi=args.dpi,
-        model=args.model,
-        batch_size=args.batch_size,
-        max_retries=args.max_retries,
-        dry_run=args.dry_run,
+        input_paths=input_paths,
+        output_dir=resolved_output_dir,
+        blank_threshold=blank_threshold,
+        dpi=dpi,
+        model=model,
+        batch_size=batch_size,
+        max_retries=max_retries,
+        dry_run=dry_run,
         languages=languages,
-        save_steps=args.save_steps,
-        skip_blanks=args.skip_blanks,
-        skip_rotation=args.skip_rotation,
+        save_steps=save_steps,
+        skip_blanks=skip_blanks,
+        skip_rotation=skip_rotation,
         skip_analysis=skip_analysis,
         skip_aggregation=skip_aggregation,
         skip_ordering=skip_ordering,
@@ -918,9 +855,82 @@ def format_error(exc: RiordinoError) -> str:
     return f"[bold red]Error:[/] {exc}"
 
 
-def main() -> None:
+@click.command(
+    context_settings={"help_option_names": ["-h", "--help"]},
+    help="Organize scanned PDFs: remove blanks, fix rotation, split by document. Multiple inputs are merged into a single bulk.",
+)
+@click.argument("input_pdf", nargs=-1, type=click.Path(path_type=Path))
+@click.option(
+    "-o",
+    "--output-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Output directory (default: same as input file)",
+)
+@click.option(
+    "-b",
+    "--blank-threshold",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.001,
+    show_default=True,
+    help="Pixel variance threshold for blank detection.",
+)
+@click.option("-n", "--dry-run", is_flag=True, help="Show plan without writing files")
+@click.option("--dpi", type=click.IntRange(72, 600), default=150, show_default=True, help="Render DPI")
+@click.option("--model", type=str, default="gemini-3.1-flash-lite-preview", show_default=True, help="Gemini model name")
+@click.option(
+    "-l",
+    "--language",
+    type=str,
+    default=lambda: os.environ.get("RIORDINO_LANGUAGES", "en"),
+    show_default="$RIORDINO_LANGUAGES or en",
+    help="Comma-separated language codes, e.g. 'en,de,fr'.",
+)
+@click.option("--batch-size", type=click.IntRange(1, 50), default=10, show_default=True, help="Pages per LLM batch")
+@click.option("--max-retries", type=click.IntRange(0, 10), default=3, show_default=True, help="Max API retry attempts")
+@click.option("--save-steps", is_flag=True, help="Save intermediate outputs to _steps/ directory")
+@click.option("--skip-blanks", is_flag=True, help="Skip blank page detection (keep all pages)")
+@click.option("--skip-rotation", is_flag=True, help="Skip rotation detection and correction")
+@click.option("--skip-analysis", is_flag=True, help="Skip LLM page analysis (implies --skip-aggregation)")
+@click.option("--skip-aggregation", is_flag=True, help="Skip LLM document grouping (implies --skip-ordering)")
+@click.option("--skip-ordering", is_flag=True, help="Skip LLM page ordering within documents")
+def main(
+    input_pdf: tuple[Path, ...],
+    output_dir: Path | None,
+    blank_threshold: float,
+    dry_run: bool,
+    dpi: int,
+    model: str,
+    language: str,
+    batch_size: int,
+    max_retries: int,
+    save_steps: bool,
+    skip_blanks: bool,
+    skip_rotation: bool,
+    skip_analysis: bool,
+    skip_aggregation: bool,
+    skip_ordering: bool,
+) -> None:
     try:
-        options = normalize_options(parse_args())
+        if not input_pdf:
+            raise CliError("at least one input PDF is required.")
+        options = normalize_options(
+            input_paths=list(input_pdf),
+            output_dir=output_dir,
+            blank_threshold=blank_threshold,
+            dpi=dpi,
+            model=model,
+            batch_size=batch_size,
+            max_retries=max_retries,
+            dry_run=dry_run,
+            language=language,
+            save_steps=save_steps,
+            skip_blanks=skip_blanks,
+            skip_rotation=skip_rotation,
+            skip_analysis=skip_analysis,
+            skip_aggregation=skip_aggregation,
+            skip_ordering=skip_ordering,
+        )
         check_dependencies(options)
         run_pipeline(options)
     except KeyboardInterrupt:

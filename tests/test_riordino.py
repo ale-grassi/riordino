@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import importlib.util
 import json
 import sys
@@ -100,6 +99,7 @@ def load_riordino_module():
     rich_progress = types.ModuleType("rich.progress")
     rich_table = types.ModuleType("rich.table")
     rich_text = types.ModuleType("rich.text")
+    click = types.ModuleType("click")
 
     class FakeStatus:
         def __enter__(self):
@@ -191,8 +191,22 @@ def load_riordino_module():
     tenacity.stop_after_attempt = lambda attempts: attempts
     tenacity.wait_exponential = lambda **kwargs: kwargs
 
+    def identity_decorator(*args, **kwargs):
+        def decorator(fn):
+            return fn
+
+        return decorator
+
+    click.command = identity_decorator
+    click.argument = identity_decorator
+    click.option = identity_decorator
+    click.IntRange = lambda *args, **kwargs: None
+    click.FloatRange = lambda *args, **kwargs: None
+    click.Path = lambda *args, **kwargs: None
+
     sys.modules.update(
         {
+            "click": click,
             "dotenv": dotenv,
             "google": google,
             "google.genai": genai,
@@ -229,8 +243,8 @@ def test_parse_languages_rejects_unknown_codes(riordino):
 
 
 def test_normalize_options_applies_implied_skips(riordino, tmp_path):
-    args = argparse.Namespace(
-        input_pdf=[tmp_path / "scan.pdf"],
+    options = riordino.normalize_options(
+        input_paths=[tmp_path / "scan.pdf"],
         output_dir=None,
         blank_threshold=0.001,
         dpi=150,
@@ -246,7 +260,6 @@ def test_normalize_options_applies_implied_skips(riordino, tmp_path):
         skip_aggregation=False,
         skip_ordering=False,
     )
-    options = riordino.normalize_options(args)
     assert options.output_dir == tmp_path
     assert options.skip_analysis is True
     assert options.skip_aggregation is True
