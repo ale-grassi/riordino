@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from PIL import Image, ImageStat
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -94,8 +94,9 @@ class ModelResponseError(RiordinoError):
     """LLM returned invalid or inconsistent structured data."""
 
 
-@dataclass(frozen=True)
-class PipelineOptions:
+class PipelineOptions(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     input_paths: list[Path]
     output_dir: Path
     blank_threshold: float
@@ -111,6 +112,48 @@ class PipelineOptions:
     skip_analysis: bool = False
     skip_aggregation: bool = False
     skip_ordering: bool = False
+
+    @classmethod
+    def from_cli(
+        cls,
+        *,
+        input_paths: list[Path],
+        output_dir: Path | None,
+        blank_threshold: float,
+        dpi: int,
+        model: str,
+        batch_size: int,
+        max_retries: int,
+        dry_run: bool,
+        language: str,
+        save_steps: bool,
+        skip_blanks: bool,
+        skip_rotation: bool,
+        skip_analysis: bool,
+        skip_aggregation: bool,
+        skip_ordering: bool,
+    ) -> PipelineOptions:
+        if not input_paths:
+            raise CliError("at least one input PDF is required.")
+        resolved_skip_aggregation = skip_aggregation or skip_analysis
+        resolved_skip_ordering = skip_ordering or resolved_skip_aggregation
+        return cls(
+            input_paths=input_paths,
+            output_dir=output_dir or input_paths[0].parent,
+            blank_threshold=blank_threshold,
+            dpi=dpi,
+            model=model,
+            batch_size=batch_size,
+            max_retries=max_retries,
+            dry_run=dry_run,
+            languages=parse_languages(language),
+            save_steps=save_steps,
+            skip_blanks=skip_blanks,
+            skip_rotation=skip_rotation,
+            skip_analysis=skip_analysis,
+            skip_aggregation=resolved_skip_aggregation,
+            skip_ordering=resolved_skip_ordering,
+        )
 
 
 @dataclass(frozen=True)
@@ -230,47 +273,6 @@ def langs_to_tesseract(codes: list[str]) -> str:
 
 def langs_to_names(codes: list[str]) -> list[str]:
     return [LANGUAGE_MAP[code][1] for code in codes]
-
-
-def normalize_options(
-    *,
-    input_paths: list[Path],
-    output_dir: Path | None,
-    blank_threshold: float,
-    dpi: int,
-    model: str,
-    batch_size: int,
-    max_retries: int,
-    dry_run: bool,
-    language: str,
-    save_steps: bool,
-    skip_blanks: bool,
-    skip_rotation: bool,
-    skip_analysis: bool,
-    skip_aggregation: bool,
-    skip_ordering: bool,
-) -> PipelineOptions:
-    skip_aggregation = skip_aggregation or skip_analysis
-    skip_ordering = skip_ordering or skip_aggregation
-    languages = parse_languages(language)
-    resolved_output_dir = output_dir or input_paths[0].parent
-    return PipelineOptions(
-        input_paths=input_paths,
-        output_dir=resolved_output_dir,
-        blank_threshold=blank_threshold,
-        dpi=dpi,
-        model=model,
-        batch_size=batch_size,
-        max_retries=max_retries,
-        dry_run=dry_run,
-        languages=languages,
-        save_steps=save_steps,
-        skip_blanks=skip_blanks,
-        skip_rotation=skip_rotation,
-        skip_analysis=skip_analysis,
-        skip_aggregation=skip_aggregation,
-        skip_ordering=skip_ordering,
-    )
 
 
 def check_dependencies(options: PipelineOptions) -> None:
@@ -469,8 +471,33 @@ class GeminiService:
         self.model = model
         self.max_retries = max_retries
 
-    def _generate(self, *, contents: Any, schema: type[BaseModel]) -> BaseModel:
-        def call() -> BaseModel:
+    def _parse_response[T: BaseModel](self, response: types.GenerateContentResponse, schema: type[T]) -> T:
+        if not response.text:
+            raise ModelResponseError("Gemini returned empty response.")
+        try:
+            return schema.model_validate_json(response.text)
+        except ValidationError as exc:
+            raise ModelResponseError(f"Gemini returned invalid JSON for {schema.__name__}.") from exc
+
+    def _generate_text[T: BaseModel](self, prompt: str, schema: type[T]) -> T:
+        def call() -> T:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                    thinking_config=types.ThinkingConfig(thinking_budget=8000),
+                ),
+            )
+            return self._parse_response(response, schema)
+
+        return retry_api_call(call, self.max_retries)
+
+    def _generate_multimodal[T: BaseModel](self, parts: list[types.Part], schema: type[T]) -> T:
+        contents = types.Content(role="user", parts=parts)
+
+        def call() -> T:
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=contents,
@@ -480,12 +507,7 @@ class GeminiService:
                     thinking_config=types.ThinkingConfig(thinking_budget=8000),
                 ),
             )
-            if not response.text:
-                raise ModelResponseError("Gemini returned empty response.")
-            try:
-                return schema.model_validate_json(response.text)
-            except ValidationError as exc:
-                raise ModelResponseError(f"Gemini returned invalid JSON for {schema.__name__}.") from exc
+            return self._parse_response(response, schema)
 
         return retry_api_call(call, self.max_retries)
 
@@ -498,11 +520,7 @@ class GeminiService:
             "{{LANGUAGES}}", ", ".join(language_names)
         )
         parts.append(types.Part.from_text(text=prompt))
-        result = self._generate(
-            contents=[types.Content(role="user", parts=parts)],
-            schema=BatchAnalysisResult,
-        )
-        assert isinstance(result, BatchAnalysisResult)
+        result = self._generate_multimodal(parts, BatchAnalysisResult)
         if len(result.pages) != len(batch):
             raise ModelResponseError(f"expected {len(batch)} page analyses, got {len(result.pages)}")
         return result.pages
@@ -521,9 +539,7 @@ class GeminiService:
         prompt = AGGREGATION_PROMPT.replace("{max_index}", str(len(analyses) - 1)).replace(
             "{page_list}", "\n".join(page_lines)
         )
-        result = self._generate(contents=prompt, schema=AggregationResult)
-        assert isinstance(result, AggregationResult)
-        return result
+        return self._generate_text(prompt, AggregationResult)
 
     def order_group(
         self, group: DocumentGroup, analyses: list[PageAnalysis], page_images: list[Image.Image]
@@ -549,11 +565,7 @@ class GeminiService:
             .replace("{pages}", "\n".join(page_lines))
         )
         parts.append(types.Part.from_text(text=prompt))
-        result = self._generate(
-            contents=[types.Content(role="user", parts=parts)],
-            schema=OrderingResult,
-        )
-        assert isinstance(result, OrderingResult)
+        result = self._generate_multimodal(parts, OrderingResult)
         if sorted(result.page_indices) != sorted(group.page_indices):
             raise ModelResponseError("ordering changed the set of page indices")
         return result.page_indices
@@ -912,9 +924,7 @@ def main(
     skip_ordering: bool,
 ) -> None:
     try:
-        if not input_pdf:
-            raise CliError("at least one input PDF is required.")
-        options = normalize_options(
+        options = PipelineOptions.from_cli(
             input_paths=list(input_pdf),
             output_dir=output_dir,
             blank_threshold=blank_threshold,

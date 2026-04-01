@@ -38,6 +38,7 @@ def load_riordino_module():
 
     pydantic = types.ModuleType("pydantic")
     pydantic.BaseModel = FakeBaseModel
+    pydantic.ConfigDict = lambda **kwargs: kwargs
     pydantic.ValidationError = FakeValidationError
 
     pymupdf = types.ModuleType("pymupdf")
@@ -83,6 +84,10 @@ def load_riordino_module():
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
+    class FakeGenerateContentResponse:
+        def __init__(self, text=None):
+            self.text = text
+
     class FakeClient:
         def __init__(self, *args, **kwargs):
             self.models = types.SimpleNamespace(generate_content=lambda **kw: None)
@@ -90,6 +95,7 @@ def load_riordino_module():
     google_types.Part = FakePart
     google_types.Content = FakeContent
     google_types.GenerateContentConfig = FakeGenerateContentConfig
+    google_types.GenerateContentResponse = FakeGenerateContentResponse
     google_types.ThinkingConfig = FakeThinkingConfig
     genai.Client = FakeClient
     genai.types = google_types
@@ -242,8 +248,8 @@ def test_parse_languages_rejects_unknown_codes(riordino):
         riordino.parse_languages("en,xx")
 
 
-def test_normalize_options_applies_implied_skips(riordino, tmp_path):
-    options = riordino.normalize_options(
+def test_pipeline_options_from_cli_applies_implied_skips(riordino, tmp_path):
+    options = riordino.PipelineOptions.from_cli(
         input_paths=[tmp_path / "scan.pdf"],
         output_dir=None,
         blank_threshold=0.001,
